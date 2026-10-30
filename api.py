@@ -9,8 +9,8 @@ from flask import Flask, request, jsonify
 import os
 import time
 
-# --- UPDATED QUERIES WITH __typename AND FALLBACKS ---
-QUERY_PROPOSAL_SHIPPING = """query Proposal($sessionInput: SessionTokenInput!, $delivery: DeliveryTermsInput, $merchandise: MerchandiseTermInput, $payment: PaymentTermInput, $buyerIdentity: BuyerIdentityTermInput, $taxes: TaxTermInput, $queueToken: String, $discounts: DiscountTermsInput) {
+# --- BULLETPROOF GRAPHQL QUERIES ---
+QUERY_PROPOSAL = """query Proposal($sessionInput: SessionTokenInput!, $delivery: DeliveryTermsInput, $merchandise: MerchandiseTermInput, $payment: PaymentTermInput, $buyerIdentity: BuyerIdentityTermInput, $taxes: TaxTermInput, $queueToken: String, $discounts: DiscountTermsInput) {
   session(sessionInput: $sessionInput) {
     negotiate(input: {
       purchaseProposal: {
@@ -29,258 +29,106 @@ QUERY_PROPOSAL_SHIPPING = """query Proposal($sessionInput: SessionTokenInput!, $
           checkpointData
           queueToken
           sellerProposal {
-            ...ProposalDetails
+            runningTotal { ... on MoneyValueConstraint { value { amount currencyCode } } }
+            subtotalBeforeTaxesAndShipping { ... on MoneyValueConstraint { value { amount currencyCode } } }
+            delivery {
+              __typename
+              ... on FilledDeliveryTerms {
+                deliveryLines {
+                  availableDeliveryStrategies {
+                    __typename
+                    ... on CompleteDeliveryStrategy {
+                      handle
+                      amount { ... on MoneyValueConstraint { value { amount currencyCode } } }
+                    }
+                  }
+                }
+              }
+            }
+            tax {
+              ... on FilledTaxTerms {
+                totalTaxAmount { ... on MoneyValueConstraint { value { amount currencyCode } } }
+              }
+            }
+            payment {
+              __typename
+              ... on FilledPaymentTerms {
+                availablePaymentLines {
+                  paymentMethod {
+                    __typename
+                    ... on PaymentProvider {
+                      paymentMethodIdentifier
+                      name
+                    }
+                    ... on OffsiteProvider {
+                      paymentMethodIdentifier
+                      name
+                    }
+                    ... on CustomOnsiteProvider {
+                      paymentMethodIdentifier
+                      name
+                    }
+                  }
+                }
+              }
+            }
           }
         }
-        ... on CheckpointDenied {
-          redirectUrl
-        }
-        ... on Throttled {
-          pollAfter
-          queueToken
-          pollUrl
-        }
-        ... on NegotiationResultFailed {
-          __typename
-        }
+        ... on CheckpointDenied { redirectUrl }
+        ... on Throttled { pollAfter queueToken pollUrl }
+        ... on NegotiationResultFailed { __typename }
       }
       errors {
         code
         localizedMessage
         nonLocalizedMessage
       }
-    }
-  }
-}
-fragment ProposalDetails on Proposal {
-  runningTotal { ... on MoneyValueConstraint { value { amount currencyCode } } }
-  checkoutTotal { ... on MoneyValueConstraint { value { amount currencyCode } } }
-  subtotalBeforeTaxesAndShipping { ... on MoneyValueConstraint { value { amount currencyCode } } }
-  merchandise {
-    ... on FilledMerchandiseTerms {
-      merchandiseLines {
-        totalAmount { ... on MoneyValueConstraint { value { amount currencyCode } } }
-      }
-    }
-  }
-  delivery {
-    __typename
-    ... on FilledDeliveryTerms {
-      deliveryLines {
-        __typename
-        availableDeliveryStrategies {
-          __typename
-          ... on CompleteDeliveryStrategy {
-            handle
-            amount { ... on MoneyValueConstraint { value { amount currencyCode } } }
-          }
-        }
-      }
-    }
-    ... on PendingTerms {
-      pollAfter
-      taskId
-    }
-    ... on UnavailableTerms {
-      __typename
-    }
-  }
-  tax {
-    ... on FilledTaxTerms {
-      totalTaxAmount { ... on MoneyValueConstraint { value { amount currencyCode } } }
-    }
-  }
-  payment {
-    __typename
-    ... on FilledPaymentTerms {
-      availablePaymentLines {
-        __typename
-        placements
-        paymentMethod {
-          __typename
-          ... on PaymentProvider {
-            paymentMethodIdentifier
-            name
-            displayName
-            extensibilityDisplayName
-          }
-          ... on OffsiteProvider {
-            paymentMethodIdentifier
-            name
-          }
-          ... on CustomOnsiteProvider {
-            paymentMethodIdentifier
-            name
-          }
-          ... on CustomerCreditCardPaymentMethod {
-            paymentMethodIdentifier
-            name
-          }
-          ... on ManualPaymentMethodConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on CustomPaymentMethodConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on WalletsPlatformConfiguration {
-            name
-          }
-          ... on PaypalWalletConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on ShopPayWalletConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on ShopifyInstallmentsWalletConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on FacebookPayWalletConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on ApplePayWalletConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on GooglePayWalletConfig {
-            paymentMethodIdentifier
-            name
-          }
-          ... on AmazonPayClassicWalletConfig {
-            name
-          }
-          ... on LocalPaymentMethodConfig {
-            paymentMethodIdentifier
-            name
-            displayName
-          }
-          ... on AnyPaymentOnDeliveryMethod {
-            paymentMethodIdentifier
-            name
-          }
-          ... on DeferredPaymentMethod {
-            displayName
-          }
-        }
-      }
-    }
-    ... on PendingTerms {
-      pollDelay
-    }
-    ... on UnavailableTerms {
-      __typename
     }
   }
 }"""
 
-QUERY_PROPOSAL_DELIVERY = QUERY_PROPOSAL_SHIPPING
-
 MUTATION_SUBMIT = """mutation SubmitForCompletion($input: NegotiationInput!, $attemptToken: String!) {
   submitForCompletion(input: $input, attemptToken: $attemptToken) {
     ... on SubmitSuccess {
-      receipt { ...ReceiptDetails }
+      receipt {
+        ... on ProcessedReceipt { id token redirectUrl }
+        ... on ProcessingReceipt { id pollDelay }
+        ... on WaitingReceipt { id pollDelay }
+        ... on ActionRequiredReceipt { id action { ... on CompletePaymentChallenge { offsiteRedirect } } }
+        ... on FailedReceipt { id processingError { ... on PaymentFailed { code messageUntranslated } } }
+      }
     }
     ... on SubmitAlreadyAccepted {
-      receipt { ...ReceiptDetails }
-    }
-    ... on SubmitFailed {
-      reason
-    }
-    ... on SubmitRejected {
-      errors {
-        code
-        localizedMessage
-        nonLocalizedMessage
+      receipt {
+        ... on ProcessedReceipt { id token redirectUrl }
+        ... on ProcessingReceipt { id pollDelay }
+        ... on WaitingReceipt { id pollDelay }
+        ... on ActionRequiredReceipt { id action { ... on CompletePaymentChallenge { offsiteRedirect } } }
+        ... on FailedReceipt { id processingError { ... on PaymentFailed { code messageUntranslated } } }
       }
     }
-    ... on Throttled {
-      pollAfter
-      queueToken
-    }
+    ... on SubmitFailed { reason }
+    ... on SubmitRejected { errors { code localizedMessage nonLocalizedMessage } }
+    ... on Throttled { pollAfter queueToken }
     ... on SubmittedForCompletion {
-      receipt { ...ReceiptDetails }
-    }
-  }
-}
-fragment ReceiptDetails on Receipt {
-  ... on ProcessedReceipt {
-    id
-    token
-    redirectUrl
-  }
-  ... on ProcessingReceipt {
-    id
-    pollDelay
-  }
-  ... on WaitingReceipt {
-    id
-    pollDelay
-  }
-  ... on ActionRequiredReceipt {
-    id
-    action {
-      ... on CompletePaymentChallenge {
-        offsiteRedirect
+      receipt {
+        ... on ProcessedReceipt { id token redirectUrl }
+        ... on ProcessingReceipt { id pollDelay }
+        ... on WaitingReceipt { id pollDelay }
+        ... on ActionRequiredReceipt { id action { ... on CompletePaymentChallenge { offsiteRedirect } } }
+        ... on FailedReceipt { id processingError { ... on PaymentFailed { code messageUntranslated } } }
       }
-    }
-  }
-  ... on FailedReceipt {
-    id
-    processingError {
-      ... on PaymentFailed {
-        code
-        messageUntranslated
-      }
-      ... on InventoryClaimFailure { __typename }
-      ... on InventoryReservationFailure { __typename }
-      ... on OrderCreationFailure { paymentsHaveBeenReverted }
     }
   }
 }"""
 
 QUERY_POLL = """query PollForReceipt($receiptId: ID!, $sessionToken: String!) {
   receipt(receiptId: $receiptId, sessionInput: {sessionToken: $sessionToken}) {
-    ...ReceiptDetails
-  }
-}
-fragment ReceiptDetails on Receipt {
-  ... on ProcessedReceipt {
-    id
-    token
-    redirectUrl
-  }
-  ... on ProcessingReceipt {
-    id
-    pollDelay
-  }
-  ... on WaitingReceipt {
-    id
-    pollDelay
-  }
-  ... on ActionRequiredReceipt {
-    id
-    action {
-      ... on CompletePaymentChallenge {
-        offsiteRedirect
-      }
-    }
-  }
-  ... on FailedReceipt {
-    id
-    processingError {
-      ... on PaymentFailed {
-        code
-        messageUntranslated
-      }
-      ... on InventoryClaimFailure { __typename }
-      ... on InventoryReservationFailure { __typename }
-      ... on OrderCreationFailure { paymentsHaveBeenReverted }
-    }
+    ... on ProcessedReceipt { id token redirectUrl }
+    ... on ProcessingReceipt { id pollDelay }
+    ... on WaitingReceipt { id pollDelay }
+    ... on ActionRequiredReceipt { id action { ... on CompletePaymentChallenge { offsiteRedirect } } }
+    ... on FailedReceipt { id processingError { ... on PaymentFailed { code messageUntranslated } } }
   }
 }"""
 
@@ -805,7 +653,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             'Content-Type': 'application/json',
             'Origin': ourl,
             'Referer': ourl,
-            'sec-ch-ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Microsoft Edge";v="146"',
+            'sec-ch-ua': '"Chromium";v="146", "Not_A.Brand";v="24", "Microsoft Edge";v="146"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Windows"'
         }
@@ -988,7 +836,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             params = {'operationName': 'Proposal'}
             
             json_data = {
-                'query': QUERY_PROPOSAL_SHIPPING,
+                'query': QUERY_PROPOSAL,
                 'variables': {
                     'sessionInput': {'sessionToken': sst},
                     'queueToken': queueToken or '',
@@ -1166,20 +1014,10 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             running_total = running_total_data.get('value', {}).get('amount', '0.00')
 
             real_subtotal = None
-            merch_block = seller_proposal.get('merchandise') or {}
-            if merch_block.get('__typename') == 'FilledMerchandiseTerms':
-                for line in merch_block.get('merchandiseLines', []) or []:
-                    ta = line.get('totalAmount') or {}
-                    v = ta.get('value') or {}
-                    if v.get('amount'):
-                        real_subtotal = v['amount']
-                        break
-
-            if not real_subtotal:
-                sbt = seller_proposal.get('subtotalBeforeTaxesAndShipping') or {}
-                sv = sbt.get('value') or {}
-                if sv.get('amount'):
-                    real_subtotal = sv['amount']
+            sbt = seller_proposal.get('subtotalBeforeTaxesAndShipping') or {}
+            sv = sbt.get('value') or {}
+            if sv.get('amount'):
+                real_subtotal = sv['amount']
 
             if real_subtotal:
                 try:
@@ -1231,7 +1069,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 for method in payment_methods:
                     payment_method = method.get('paymentMethod') or {}
                     pid = payment_method.get('paymentMethodIdentifier')
-                    name = payment_method.get('extensibilityDisplayName') or payment_method.get('displayName') or payment_method.get('name')
+                    name = payment_method.get('displayName') or payment_method.get('name')
                     if pid or name:
                         payment_identifier = pid
                         gateway = name or "UNKNOWN"
@@ -1241,7 +1079,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             if not payment_identifier:
                 return False, "No valid payment method found", gateway, total_price, currency
             
-            json_data['query'] = QUERY_PROPOSAL_DELIVERY
+            json_data['query'] = QUERY_PROPOSAL
             json_data['variables']['delivery']['deliveryLines'][0]['selectedDeliveryStrategy'] = {
                 'deliveryStrategyByHandle': {
                     'handle': delivery_strategy if delivery_strategy else '',
@@ -1295,7 +1133,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 'Origin': 'https://checkout.pci.shopifyinc.com',
                 'Referer': 'https://checkout.pci.shopifyinc.com/build/a8e4a94/number-ltr.html?identifier=&locationURL=',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0',
-                'sec-ch-ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Microsoft Edge";v="146"',
+                'sec-ch-ua': '"Chromium";v="146", "Not_A.Brand";v="24", "Microsoft Edge";v="146"',
                 'sec-ch-ua-mobile': '?0',
                 'sec-ch-ua-platform': '"Windows"',
                 'sec-fetch-dest': 'empty',
