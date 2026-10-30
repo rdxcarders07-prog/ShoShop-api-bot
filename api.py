@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify
 import os
 import time
 
-# --- FIXED AND PERFECTLY CLOSED GRAPHQL QUERIES ---
+# --- FIXED UNION TYPES IN GRAPHQL QUERIES ---
 QUERY_PROPOSAL_SHIPPING = """query Proposal($sessionInput: SessionTokenInput!, $delivery: DeliveryTermsInput, $merchandise: MerchandiseTermInput, $payment: PaymentTermInput, $buyerIdentity: BuyerIdentityTermInput, $taxes: TaxTermInput, $queueToken: String, $discounts: DiscountTermsInput) {
   session(sessionInput: $sessionInput) {
     negotiate(input: {
@@ -53,13 +53,13 @@ QUERY_PROPOSAL_SHIPPING = """query Proposal($sessionInput: SessionTokenInput!, $
   }
 }
 fragment ProposalDetails on Proposal {
-  runningTotal { value { amount currencyCode } }
-  checkoutTotal { value { amount currencyCode } }
-  subtotalBeforeTaxesAndShipping { value { amount currencyCode } }
+  runningTotal { ... on MoneyValueConstraint { value { amount currencyCode } } }
+  checkoutTotal { ... on MoneyValueConstraint { value { amount currencyCode } } }
+  subtotalBeforeTaxesAndShipping { ... on MoneyValueConstraint { value { amount currencyCode } } }
   merchandise {
     ... on FilledMerchandiseTerms {
       merchandiseLines {
-        totalAmount { value { amount currencyCode } }
+        totalAmount { ... on MoneyValueConstraint { value { amount currencyCode } } }
       }
     }
   }
@@ -67,15 +67,17 @@ fragment ProposalDetails on Proposal {
     ... on FilledDeliveryTerms {
       deliveryLines {
         availableDeliveryStrategies {
-          handle
-          amount { value { amount currencyCode } }
+          ... on CompleteDeliveryStrategy {
+            handle
+            amount { ... on MoneyValueConstraint { value { amount currencyCode } } }
+          }
         }
       }
     }
   }
   tax {
     ... on FilledTaxTerms {
-      totalTaxAmount { value { amount currencyCode } }
+      totalTaxAmount { ... on MoneyValueConstraint { value { amount currencyCode } } }
     }
   }
   payment {
@@ -86,12 +88,25 @@ fragment ProposalDetails on Proposal {
             paymentMethodIdentifier
             name
             displayName
+            extensibilityDisplayName
           }
           ... on OffsiteProvider {
             paymentMethodIdentifier
             name
           }
           ... on CustomOnsiteProvider {
+            paymentMethodIdentifier
+            name
+          }
+          ... on CustomerCreditCardPaymentMethod {
+            paymentMethodIdentifier
+            name
+          }
+          ... on ManualPaymentMethodConfig {
+            paymentMethodIdentifier
+            name
+          }
+          ... on CustomPaymentMethodConfig {
             paymentMethodIdentifier
             name
           }
@@ -1088,7 +1103,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             if not running_total_data:
                 return False, "No runningTotal in sellerProposal", gateway, total_price, currency
 
-            running_total = running_total_data['value']['amount']
+            running_total = running_total_data.get('value', {}).get('amount', '0.00')
 
             real_subtotal = None
             merch_block = seller_proposal.get('merchandise') or {}
