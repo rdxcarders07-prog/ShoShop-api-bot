@@ -9,14 +9,203 @@ from flask import Flask, request, jsonify
 import os
 import time
 
-# --- SIMPLIFIED QUERIES TO FIX "TYPE NO LONGER SUPPORTED" ERROR ---
-QUERY_PROPOSAL_SHIPPING = """query Proposal($alternativePaymentCurrency:AlternativePaymentCurrencyInput,$delivery:DeliveryTermsInput,$discounts:DiscountTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$taxes:TaxTermInput,$sessionInput:SessionTokenInput!,$checkpointData:String,$queueToken:String,$reduction:ReductionInput,$availableRedeemables:AvailableRedeemablesInput,$changesetTokens:[String!],$tip:TipTermInput,$note:NoteInput,$localizationExtension:LocalizationExtensionInput,$nonNegotiableTerms:NonNegotiableTermsInput,$scriptFingerprint:ScriptFingerprintInput,$transformerFingerprintV2:String,$optionalDuties:OptionalDutiesInput,$attribution:AttributionInput,$captcha:CaptchaInput,$poNumber:String,$saleAttributions:SaleAttributionsInput){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{alternativePaymentCurrency:$alternativePaymentCurrency,delivery:$delivery,discounts:$discounts,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity,taxes:$taxes,reduction:$reduction,availableRedeemables:$availableRedeemables,tip:$tip,note:$note,poNumber:$poNumber,nonNegotiableTerms:$nonNegotiableTerms,localizationExtension:$localizationExtension,scriptFingerprint:$scriptFingerprint,transformerFingerprintV2:$transformerFingerprintV2,optionalDuties:$optionalDuties,attribution:$attribution,captcha:$captcha,saleAttributions:$saleAttributions},checkpointData:$checkpointData,queueToken:$queueToken,changesetTokens:$changesetTokens}){__typename result{...on NegotiationResultAvailable{checkpointData queueToken sellerProposal{...ProposalDetails __typename}__typename}...on CheckpointDenied{redirectUrl __typename}...on Throttled{pollAfter queueToken pollUrl __typename}...on NegotiationResultFailed{__typename}__typename}errors{code localizedMessage nonLocalizedMessage __typename}__typename}}fragment ProposalDetails on Proposal{delivery{...on FilledDeliveryTerms{deliveryLines{availableDeliveryStrategies{...on CompleteDeliveryStrategy{handle amount{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}__typename}__typename}__typename}...on PendingTerms{pollDelay taskId __typename}...on UnavailableTerms{__typename}__typename}payment{...on FilledPaymentTerms{availablePaymentLines{placements paymentMethod{...on PaymentProvider{paymentMethodIdentifier name extensibilityDisplayName __typename}...on OffsiteProvider{paymentMethodIdentifier name __typename}...on CustomOnsiteProvider{paymentMethodIdentifier name __typename}...on CustomerCreditCardPaymentMethod{paymentMethodIdentifier __typename}...on PaypalBillingAgreementPaymentMethod{paymentMethodIdentifier __typename}__typename}__typename}__typename}...on PendingTerms{pollDelay __typename}...on UnavailableTerms{__typename}__typename}tax{...on FilledTaxTerms{totalTaxAmount{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}...on PendingTerms{pollDelay __typename}...on UnavailableTerms{__typename}__typename}merchandise{...on FilledMerchandiseTerms{merchandiseLines{totalAmount{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}__typename}__typename}runningTotal{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}total{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}"""
+# --- FIXED AND PERFECTLY CLOSED GRAPHQL QUERIES ---
+QUERY_PROPOSAL_SHIPPING = """query Proposal($sessionInput: SessionTokenInput!, $delivery: DeliveryTermsInput, $merchandise: MerchandiseTermInput, $payment: PaymentTermInput, $buyerIdentity: BuyerIdentityTermInput, $taxes: TaxTermInput, $queueToken: String, $discounts: DiscountTermsInput) {
+  session(sessionInput: $sessionInput) {
+    negotiate(input: {
+      purchaseProposal: {
+        delivery: $delivery,
+        merchandise: $merchandise,
+        payment: $payment,
+        buyerIdentity: $buyerIdentity,
+        taxes: $taxes,
+        discounts: $discounts
+      },
+      queueToken: $queueToken
+    }) {
+      __typename
+      result {
+        ... on NegotiationResultAvailable {
+          checkpointData
+          queueToken
+          sellerProposal {
+            ...ProposalDetails
+          }
+        }
+        ... on CheckpointDenied {
+          redirectUrl
+        }
+        ... on Throttled {
+          pollAfter
+          queueToken
+          pollUrl
+        }
+        ... on NegotiationResultFailed {
+          __typename
+        }
+      }
+      errors {
+        code
+        localizedMessage
+        nonLocalizedMessage
+      }
+    }
+  }
+}
+fragment ProposalDetails on Proposal {
+  runningTotal { value { amount currencyCode } }
+  checkoutTotal { value { amount currencyCode } }
+  subtotalBeforeTaxesAndShipping { value { amount currencyCode } }
+  merchandise {
+    ... on FilledMerchandiseTerms {
+      merchandiseLines {
+        totalAmount { value { amount currencyCode } }
+      }
+    }
+  }
+  delivery {
+    ... on FilledDeliveryTerms {
+      deliveryLines {
+        availableDeliveryStrategies {
+          handle
+          amount { value { amount currencyCode } }
+        }
+      }
+    }
+  }
+  tax {
+    ... on FilledTaxTerms {
+      totalTaxAmount { value { amount currencyCode } }
+    }
+  }
+  payment {
+    ... on FilledPaymentTerms {
+      availablePaymentLines {
+        paymentMethod {
+          ... on PaymentProvider {
+            paymentMethodIdentifier
+            name
+            displayName
+          }
+          ... on OffsiteProvider {
+            paymentMethodIdentifier
+            name
+          }
+          ... on CustomOnsiteProvider {
+            paymentMethodIdentifier
+            name
+          }
+        }
+      }
+    }
+  }
+}"""
 
-QUERY_PROPOSAL_DELIVERY = """query Proposal($alternativePaymentCurrency:AlternativePaymentCurrencyInput,$delivery:DeliveryTermsInput,$discounts:DiscountTermsInput,$payment:PaymentTermInput,$merchandise:MerchandiseTermInput,$buyerIdentity:BuyerIdentityTermInput,$taxes:TaxTermInput,$sessionInput:SessionTokenInput!,$checkpointData:String,$queueToken:String,$reduction:ReductionInput,$availableRedeemables:AvailableRedeemablesInput,$changesetTokens:[String!],$tip:TipTermInput,$note:NoteInput,$localizationExtension:LocalizationExtensionInput,$nonNegotiableTerms:NonNegotiableTermsInput,$scriptFingerprint:ScriptFingerprintInput,$transformerFingerprintV2:String,$optionalDuties:OptionalDutiesInput,$attribution:AttributionInput,$captcha:CaptchaInput,$poNumber:String,$saleAttributions:SaleAttributionsInput){session(sessionInput:$sessionInput){negotiate(input:{purchaseProposal:{alternativePaymentCurrency:$alternativePaymentCurrency,delivery:$delivery,discounts:$discounts,payment:$payment,merchandise:$merchandise,buyerIdentity:$buyerIdentity,taxes:$taxes,reduction:$reduction,availableRedeemables:$availableRedeemables,tip:$tip,note:$note,poNumber:$poNumber,nonNegotiableTerms:$nonNegotiableTerms,localizationExtension:$localizationExtension,scriptFingerprint:$scriptFingerprint,transformerFingerprintV2:$transformerFingerprintV2,optionalDuties:$optionalDuties,attribution:$attribution,captcha:$captcha,saleAttributions:$saleAttributions},checkpointData:$checkpointData,queueToken:$queueToken,changesetTokens:$changesetTokens}){__typename result{...on NegotiationResultAvailable{checkpointData queueToken sellerProposal{...ProposalDetails __typename}__typename}...on CheckpointDenied{redirectUrl __typename}...on Throttled{pollAfter queueToken pollUrl __typename}...on NegotiationResultFailed{__typename}__typename}errors{code localizedMessage nonLocalizedMessage __typename}__typename}}fragment ProposalDetails on Proposal{delivery{...on FilledDeliveryTerms{deliveryLines{availableDeliveryStrategies{...on CompleteDeliveryStrategy{handle amount{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}__typename}__typename}__typename}...on PendingTerms{pollDelay taskId __typename}...on UnavailableTerms{__typename}__typename}payment{...on FilledPaymentTerms{availablePaymentLines{placements paymentMethod{...on PaymentProvider{paymentMethodIdentifier name extensibilityDisplayName __typename}...on OffsiteProvider{paymentMethodIdentifier name __typename}...on CustomOnsiteProvider{paymentMethodIdentifier name __typename}...on CustomerCreditCardPaymentMethod{paymentMethodIdentifier __typename}...on PaypalBillingAgreementPaymentMethod{paymentMethodIdentifier __typename}__typename}__typename}__typename}...on PendingTerms{pollDelay __typename}...on UnavailableTerms{__typename}__typename}tax{...on FilledTaxTerms{totalTaxAmount{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}...on PendingTerms{pollDelay __typename}...on UnavailableTerms{__typename}__typename}merchandise{...on FilledMerchandiseTerms{merchandiseLines{totalAmount{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}__typename}__typename}runningTotal{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}total{...on MoneyValueConstraint{value{amount currencyCode __typename}__typename}__typename}__typename}"""
+QUERY_PROPOSAL_DELIVERY = QUERY_PROPOSAL_SHIPPING
 
-MUTATION_SUBMIT = """mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!,$metafields:[MetafieldInput!],$postPurchaseInquiryResult:PostPurchaseInquiryResultCode,$analytics:AnalyticsInput){submitForCompletion(input:$input attemptToken:$attemptToken metafields:$metafields postPurchaseInquiryResult:$postPurchaseInquiryResult analytics:$analytics){...on SubmitSuccess{receipt{...ReceiptDetails __typename}__typename}...on SubmitAlreadyAccepted{receipt{...ReceiptDetails __typename}__typename}...on SubmitFailed{reason __typename}...on SubmitRejected{errors{...on NegotiationError{code localizedMessage nonLocalizedMessage __typename}__typename}__typename}...on Throttled{pollAfter pollUrl queueToken __typename}...on CheckpointDenied{redirectUrl __typename}...on SubmittedForCompletion{receipt{...ReceiptDetails __typename}__typename}__typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token redirectUrl __typename}...on ProcessingReceipt{id pollDelay __typename}...on WaitingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id action{...on CompletePaymentChallenge{offsiteRedirect url __typename}...on CompletePaymentChallengeV2{challengeType challengeData __typename}__typename}__typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated __typename}...on InventoryClaimFailure{__typename}...on InventoryReservationFailure{__typename}...on OrderCreationFailure{paymentsHaveBeenReverted __typename}...on OrderCreationSchedulingFailure{__typename}...on DiscountUsageLimitExceededFailure{__typename}...on CustomerPersistenceFailure{__typename}__typename}__typename}__typename}"""
+MUTATION_SUBMIT = """mutation SubmitForCompletion($input: NegotiationInput!, $attemptToken: String!) {
+  submitForCompletion(input: $input, attemptToken: $attemptToken) {
+    ... on SubmitSuccess {
+      receipt { ...ReceiptDetails }
+    }
+    ... on SubmitAlreadyAccepted {
+      receipt { ...ReceiptDetails }
+    }
+    ... on SubmitFailed {
+      reason
+    }
+    ... on SubmitRejected {
+      errors {
+        code
+        localizedMessage
+        nonLocalizedMessage
+      }
+    }
+    ... on Throttled {
+      pollAfter
+      queueToken
+    }
+    ... on SubmittedForCompletion {
+      receipt { ...ReceiptDetails }
+    }
+  }
+}
+fragment ReceiptDetails on Receipt {
+  ... on ProcessedReceipt {
+    id
+    token
+    redirectUrl
+  }
+  ... on ProcessingReceipt {
+    id
+    pollDelay
+  }
+  ... on WaitingReceipt {
+    id
+    pollDelay
+  }
+  ... on ActionRequiredReceipt {
+    id
+    action {
+      ... on CompletePaymentChallenge {
+        offsiteRedirect
+      }
+    }
+  }
+  ... on FailedReceipt {
+    id
+    processingError {
+      ... on PaymentFailed {
+        code
+        messageUntranslated
+      }
+      ... on InventoryClaimFailure { __typename }
+      ... on InventoryReservationFailure { __typename }
+      ... on OrderCreationFailure { paymentsHaveBeenReverted }
+    }
+  }
+}"""
 
-QUERY_POLL = """query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...ReceiptDetails __typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token redirectUrl __typename}...on ProcessingReceipt{id pollDelay __typename}...on WaitingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id action{...on CompletePaymentChallenge{offsiteRedirect url __typename}...on CompletePaymentChallengeV2{challengeType challengeData __typename}__typename}__typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated __typename}...on InventoryClaimFailure{__typename}...on InventoryReservationFailure{__typename}...on OrderCreationFailure{paymentsHaveBeenReverted __typename}...on OrderCreationSchedulingFailure{__typename}...on DiscountUsageLimitExceededFailure{__typename}...on CustomerPersistenceFailure{__typename}__typename}__typename}__typename}"""
+QUERY_POLL = """query PollForReceipt($receiptId: ID!, $sessionToken: String!) {
+  receipt(receiptId: $receiptId, sessionInput: {sessionToken: $sessionToken}) {
+    ...ReceiptDetails
+  }
+}
+fragment ReceiptDetails on Receipt {
+  ... on ProcessedReceipt {
+    id
+    token
+    redirectUrl
+  }
+  ... on ProcessingReceipt {
+    id
+    pollDelay
+  }
+  ... on WaitingReceipt {
+    id
+    pollDelay
+  }
+  ... on ActionRequiredReceipt {
+    id
+    action {
+      ... on CompletePaymentChallenge {
+        offsiteRedirect
+      }
+    }
+  }
+  ... on FailedReceipt {
+    id
+    processingError {
+      ... on PaymentFailed {
+        code
+        messageUntranslated
+      }
+      ... on InventoryClaimFailure { __typename }
+      ... on InventoryReservationFailure { __typename }
+      ... on OrderCreationFailure { paymentsHaveBeenReverted }
+    }
+  }
+}"""
 
 C2C = {
     "USD": "US",
@@ -1374,16 +1563,10 @@ def shopify_checker():
         proxy_str = request.args.get('proxy')
 
         if not site:
-            return jsonify({
-                "error": "Missing 'site' parameter",
-                "status": False
-            }), 400
+            return jsonify({"error": "Missing 'site' parameter", "status": False}), 400
 
         if not cc_string:
-            return jsonify({
-                "error": "Missing 'cc' parameter in format CC|MM|YYYY|CVV",
-                "status": False
-            }), 400
+            return jsonify({"error": "Missing 'cc' parameter in format CC|MM|YYYY|CVV", "status": False}), 400
 
         try:
             cc_parts = parse_cc_string(cc_string)
@@ -1392,10 +1575,7 @@ def shopify_checker():
             ano = cc_parts['ano']
             cvv = cc_parts['cvv']
         except ValueError as e:
-            return jsonify({
-                "error": str(e),
-                "status": False
-            }), 400
+            return jsonify({"error": str(e), "status": False}), 400
 
         variant_id = request.args.get('variant')
 
@@ -1437,11 +1617,6 @@ def shopify_checker():
             "cc": request.args.get('cc', '')
         }), 500
 
-# ============================================================
-# NEW ENDPOINT: spitxXchk
-# Routes: /spitxXchk , /spitxXchk/shopii , /shopii
-# Browser-friendly HTML when no params, JSON when site+cc given
-# ============================================================
 @app.route('/', methods=['GET'])
 def _root_health():
     return (
@@ -1479,18 +1654,10 @@ def spitxXchk():
             ), 200, {"Content-Type": "text/html"}
 
         if not site:
-            return jsonify({
-                "error": "Missing 'site' parameter",
-                "status": False,
-                "Response": "MISSING_SITE"
-            }), 400
+            return jsonify({"error": "Missing 'site' parameter", "status": False, "Response": "MISSING_SITE"}), 400
 
         if not cc_string:
-            return jsonify({
-                "error": "Missing 'cc' parameter in format CC|MM|YYYY|CVV",
-                "status": False,
-                "Response": "MISSING_CC"
-            }), 400
+            return jsonify({"error": "Missing 'cc' parameter in format CC|MM|YYYY|CVV", "status": False, "Response": "MISSING_CC"}), 400
 
         try:
             cc_parts = parse_cc_string(cc_string)
@@ -1499,11 +1666,7 @@ def spitxXchk():
             ano = cc_parts['ano']
             cvv = cc_parts['cvv']
         except ValueError as e:
-            return jsonify({
-                "error": str(e),
-                "status": False,
-                "Response": "BAD_CC_FORMAT"
-            }), 400
+            return jsonify({"error": str(e), "status": False, "Response": "BAD_CC_FORMAT"}), 400
 
         variant_id = request.args.get('variant')
 
